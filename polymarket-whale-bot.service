@@ -1,0 +1,21 @@
+[Unit]
+Description=Polymarket New Whale Detector Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/polymarket-whale-bot
+ExecStart=/opt/polymarket-whale-bot/venv/bin/python -m src.main
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+# Hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/polymarket-whale-bot
+
+[Install]
+WantedBy=multi-user.target

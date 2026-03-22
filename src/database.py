@@ -1,0 +1,293 @@
+"""Persistent signal storage using Postgres (Neon).
+
+Stores every whale signal with entry price, then tracks
+resolution status for paper-trading P&L calculation.
+"""
+
+import logging
+import time
+from typing import Optional
+
+import psycopg
+from psycopg.rows import dict_row
+from psycopg_pool import AsyncConnectionPool
+
+from .config import config
+
+logger = logging.getLogger(__name__)
+
+_pool: Optional[AsyncConnectionPool] = None
+
+THRESHOLD_BUCKETS = [500, 1_000, 2_500, 5_000, 10_000, 25_000, 50_000, 100_000]
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS signals (
+    id              SERIAL PRIMARY KEY,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    wallet          TEXT NOT NULL,
+    trade_size_usdc DOUBLE PRECISION NOT NULL,
+    side            TEXT NOT NULL,
+    ctf_token_id    TEXT NOT NULL,
+    market_title    TEXT NOT NULL DEFAULT '',
+    outcome         TEXT NOT NULL DEFAULT '',
+    exchange        TEXT NOT NULL DEFAULT '',
+    tx_hash         TEXT NOT NULL DEFAULT '',
+    account_age_days DOUBLE PRECISION NOT NULL DEFAULT 0,
+    total_trades    INTEGER NOT NULL DEFAULT 0,
+    total_volume_usdc DOUBLE PRECISION NOT NULL DEFAULT 0,
+    entry_price     DOUBLE PRECISION,
+    pseudonym       TEXT,
+    condition_id    TEXT NOT NULL DEFAULT '',
+    market_slug     TEXT NOT NULL DEFAULT '',
+    -- Resolution fields (filled in later by settlement checker)
+    resolved        BOOLEAN NOT NULL DEFAULT FALSE,
+    won             BOOLEAN,
+    winning_outcome TEXT,
+    resolved_at     TIMESTAMPTZ,
+    -- Indexes
+    UNIQUE(tx_hash, wallet, ctf_token_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_signals_resolved ON signals(resolved) WHERE NOT resolved;
+CREATE INDEX IF NOT EXISTS idx_signals_created ON signals(created_at);
+CREATE INDEX IF NOT EXISTS idx_signals_size ON signals(trade_size_usdc);
+"""
+
+
+async def init_db():
+    """Initialize connection pool and create schema."""
+    global _pool
+    if _pool is not None:
+        return
+
+    _pool = AsyncConnectionPool(
+        config.database_url,
+        min_size=1,
+        max_size=5,
+        open=False,
+        kwargs={"row_factory": dict_row},
+    )
+    await _pool.open()
+
+    async with _pool.connection() as conn:
+        for statement in SCHEMA.split(";"):
+            statement = statement.strip()
+            if statement:
+                await conn.execute(statement)
+        await conn.commit()
+
+    logger.info("Database initialized")
+
+
+async def close_db():
+    """Close the connection pool."""
+    global _pool
+    if _pool:
+        await _pool.close()
+        _pool = None
+
+
+async def save_signal(data: dict) -> Optional[int]:
+    """Save a whale signal to the database.
+
+    Returns the signal ID, or None if it was a duplicate.
+    """
+    if _pool is None:
+        logger.warning("Database not initialized — signal not saved")
+        return None
+
+    try:
+        async with _pool.connection() as conn:
+            row = await conn.execute(
+                """
+                INSERT INTO signals (
+                    wallet, trade_size_usdc, side, ctf_token_id,
+                    market_title, outcome, exchange, tx_hash,
+                    account_age_days, total_trades, total_volume_usdc,
+                    entry_price, pseudonym, condition_id, market_slug
+                ) VALUES (
+                    %(wallet)s, %(trade_size_usdc)s, %(side)s, %(ctf_token_id)s,
+                    %(market_title)s, %(outcome)s, %(exchange)s, %(tx_hash)s,
+                    %(account_age_days)s, %(total_trades)s, %(total_volume_usdc)s,
+                    %(entry_price)s, %(pseudonym)s, %(condition_id)s, %(market_slug)s
+                )
+                ON CONFLICT (tx_hash, wallet, ctf_token_id) DO NOTHING
+                RETURNING id
+                """,
+                data,
+            )
+            result = await row.fetchone()
+            await conn.commit()
+
+            if result:
+                logger.info(f"Signal saved: id={result['id']} ${data['trade_size_usdc']:,.0f} on {data['market_title'][:40]}")
+                return result["id"]
+            else:
+                logger.debug(f"Duplicate signal skipped: {data['tx_hash'][:10]}")
+                return None
+
+    except Exception as e:
+        logger.error(f"Failed to save signal: {e}")
+        return None
+
+
+async def get_unresolved_signals(max_age_days: int = 90) -> list[dict]:
+    """Get all unresolved signals younger than max_age_days."""
+    if _pool is None:
+        return []
+
+    async with _pool.connection() as conn:
+        cursor = await conn.execute(
+            """
+            SELECT * FROM signals
+            WHERE NOT resolved
+              AND created_at > NOW() - INTERVAL '1 day' * %s
+            ORDER BY created_at ASC
+            """,
+            (max_age_days,),
+        )
+        return await cursor.fetchall()
+
+
+async def update_signal_resolution(
+    signal_id: int, won: bool, winning_outcome: str
+):
+    """Mark a signal as resolved with win/loss outcome."""
+    if _pool is None:
+        return
+
+    async with _pool.connection() as conn:
+        await conn.execute(
+            """
+            UPDATE signals
+            SET resolved = TRUE, won = %s, winning_outcome = %s, resolved_at = NOW()
+            WHERE id = %s
+            """,
+            (won, winning_outcome, signal_id),
+        )
+        await conn.commit()
+        logger.info(f"Signal {signal_id} resolved: {'WIN' if won else 'LOSS'} (winner: {winning_outcome})")
+
+
+async def get_stats() -> dict:
+    """Compute paper-trading stats from the database.
+
+    Returns:
+        {
+            "total_signals": int,
+            "total_resolved": int,
+            "total_wins": int,
+            "total_losses": int,
+            "total_pending": int,
+            "by_threshold": [
+                {"threshold": 500, "signals": N, "wins": N, "losses": N, "pending": N, "win_rate": float|None},
+                ...
+            ],
+            "by_age": [
+                {"bucket": "0-1d", "signals": N, "wins": N, "losses": N, "win_rate": float|None},
+                ...
+            ],
+            "recent_signals": [...],  # last 20 signals
+        }
+    """
+    if _pool is None:
+        return {"total_signals": 0, "by_threshold": [], "by_age": [], "recent_signals": []}
+
+    async with _pool.connection() as conn:
+        # Overall totals
+        row = await (await conn.execute(
+            """
+            SELECT
+                COUNT(*) as total,
+                COUNT(*) FILTER (WHERE resolved AND won) as wins,
+                COUNT(*) FILTER (WHERE resolved AND NOT won) as losses,
+                COUNT(*) FILTER (WHERE NOT resolved) as pending
+            FROM signals
+            """
+        )).fetchone()
+
+        total_signals = row["total"]
+        total_wins = row["wins"]
+        total_losses = row["losses"]
+        total_pending = row["pending"]
+
+        # By threshold bucket
+        by_threshold = []
+        for threshold in THRESHOLD_BUCKETS:
+            bucket = await (await conn.execute(
+                """
+                SELECT
+                    COUNT(*) as signals,
+                    COUNT(*) FILTER (WHERE resolved AND won) as wins,
+                    COUNT(*) FILTER (WHERE resolved AND NOT won) as losses,
+                    COUNT(*) FILTER (WHERE NOT resolved) as pending
+                FROM signals
+                WHERE trade_size_usdc >= %s
+                """,
+                (threshold,),
+            )).fetchone()
+
+            resolved = bucket["wins"] + bucket["losses"]
+            by_threshold.append({
+                "threshold": threshold,
+                "signals": bucket["signals"],
+                "wins": bucket["wins"],
+                "losses": bucket["losses"],
+                "pending": bucket["pending"],
+                "win_rate": round(bucket["wins"] / resolved, 4) if resolved > 0 else None,
+            })
+
+        # By account age bucket
+        age_buckets = [
+            ("0-1d", 0, 1),
+            ("1-3d", 1, 3),
+            ("3-7d", 3, 7),
+            ("7d+", 7, 9999),
+        ]
+        by_age = []
+        for label, min_age, max_age in age_buckets:
+            bucket = await (await conn.execute(
+                """
+                SELECT
+                    COUNT(*) as signals,
+                    COUNT(*) FILTER (WHERE resolved AND won) as wins,
+                    COUNT(*) FILTER (WHERE resolved AND NOT won) as losses,
+                    COUNT(*) FILTER (WHERE NOT resolved) as pending
+                FROM signals
+                WHERE account_age_days >= %s AND account_age_days < %s
+                """,
+                (min_age, max_age),
+            )).fetchone()
+
+            resolved = bucket["wins"] + bucket["losses"]
+            by_age.append({
+                "bucket": label,
+                "signals": bucket["signals"],
+                "wins": bucket["wins"],
+                "losses": bucket["losses"],
+                "pending": bucket["pending"],
+                "win_rate": round(bucket["wins"] / resolved, 4) if resolved > 0 else None,
+            })
+
+        # Recent signals
+        recent = await (await conn.execute(
+            """
+            SELECT id, created_at, wallet, trade_size_usdc, side,
+                   market_title, outcome, account_age_days, total_trades,
+                   entry_price, resolved, won, winning_outcome, market_slug
+            FROM signals
+            ORDER BY created_at DESC
+            LIMIT 20
+            """
+        )).fetchall()
+
+        return {
+            "total_signals": total_signals,
+            "total_resolved": total_wins + total_losses,
+            "total_wins": total_wins,
+            "total_losses": total_losses,
+            "total_pending": total_pending,
+            "by_threshold": by_threshold,
+            "by_age": by_age,
+            "recent_signals": recent,
+        }
