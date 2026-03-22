@@ -10,7 +10,7 @@ from .monitor import run_monitor
 from .notifier import verify_bot
 from .settlement import check_settlements
 
-SETTLEMENT_INTERVAL = 6 * 60 * 60  # 6 hours
+SETTLEMENT_INTERVAL = 5 * 60  # 5 minutes
 
 
 def setup_logging():
