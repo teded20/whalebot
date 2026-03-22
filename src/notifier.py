@@ -7,10 +7,17 @@ from telegram.constants import ParseMode
 
 from .config import config
 from .analyzer import AnalysisResult
+from .scorer import ScoreBreakdown
 
 logger = logging.getLogger(__name__)
 
 bot: Bot | None = None
+
+
+def _score_bar(score: int, width: int = 10) -> str:
+    """Render a visual score bar like [████░░░░░░] 40/100."""
+    filled = round(score / 100 * width)
+    return f"[{'█' * filled}{'░' * (width - filled)}] {score}/100"
 
 
 def init_bot():
@@ -49,6 +56,7 @@ async def send_whale_alert(
     side: str,
     tx_hash: str,
     exchange: str,
+    score: ScoreBreakdown | None = None,
 ) -> bool:
     """Send a formatted whale alert to the configured Telegram chat.
 
@@ -100,6 +108,33 @@ async def send_whale_alert(
     if slug:
         market_link = f"https://polymarket.com/event/{slug}"
 
+    # Build score section
+    score_section = ""
+    if score is not None:
+        # Build a compact breakdown showing which factors fired
+        factors = []
+        factor_labels = {
+            "age": "Account Age",
+            "low_prob": "Low Probability",
+            "size": "Trade Size",
+            "concentration": "Concentrated",
+            "size_ratio": "Size vs History",
+            "cluster": "Cluster Activity",
+        }
+        for key, pts in score.components.items():
+            if pts > 0:
+                label = factor_labels.get(key, key)
+                factors.append(f"  • {label}: +{pts}")
+
+        score_bar = _score_bar(score.total)
+        score_section = (
+            f"\n"
+            f"{score.tier_emoji} <b>Suspicion Score: {score.total}/100 ({score.tier})</b>\n"
+            f"{score_bar}\n"
+            + "\n".join(factors)
+            + "\n"
+        )
+
     message = (
         f"{size_emoji} <b>New Whale Alert</b> {size_emoji}\n"
         f"\n"
@@ -114,7 +149,8 @@ async def send_whale_alert(
         f"<b>Prior trades:</b> {analysis.total_trades}\n"
         f"<b>Account age:</b> {analysis.account_age_days} days\n"
         f"<b>Total volume:</b> ${analysis.total_volume_usdc:,.2f}\n"
-        f"\n"
+        f"<b>Markets traded:</b> {analysis.unique_markets}\n"
+        f"{score_section}\n"
         f"🔗 <a href=\"{analysis.profile_url}\">Polymarket Profile</a>\n"
         f"🔗 <a href=\"{analysis.polygonscan_url}\">PolygonScan</a>\n"
     )

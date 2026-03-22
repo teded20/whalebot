@@ -34,6 +34,7 @@ class AnalysisResult:
     account_age_days: float
     total_volume_usdc: float
     pseudonym: Optional[str]
+    unique_markets: int  # distinct markets traded
     timestamp: float  # when this analysis was done
 
     @property
@@ -67,6 +68,7 @@ async def analyze_wallet(
     first_trade_ts: Optional[int] = None
     total_volume = 0.0
     pseudonym = None
+    seen_markets: set[str] = set()
 
     try:
         # Fetch trade history sorted by timestamp ASC to find first trade
@@ -94,6 +96,10 @@ async def analyze_wallet(
                         usdc_size = trade.get("usdcSize", 0)
                         if usdc_size:
                             total_volume += float(usdc_size)
+                        # Track unique markets for concentration scoring
+                        slug = trade.get("slug") or trade.get("marketSlug") or trade.get("conditionId", "")
+                        if slug:
+                            seen_markets.add(slug)
 
     except Exception as e:
         logger.error(f"Failed to analyze wallet {wallet}: {e}")
@@ -105,6 +111,7 @@ async def analyze_wallet(
             account_age_days=-1,
             total_volume_usdc=0,
             pseudonym=None,
+            unique_markets=0,
             timestamp=now,
         )
         _analysis_cache[wallet_lower] = result
@@ -137,6 +144,7 @@ async def analyze_wallet(
         account_age_days=round(account_age_days, 1),
         total_volume_usdc=round(total_volume, 2),
         pseudonym=pseudonym,
+        unique_markets=len(seen_markets),
         timestamp=now,
     )
 

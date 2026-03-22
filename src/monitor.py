@@ -10,6 +10,7 @@ analyzer and notifier.
 """
 
 import asyncio
+import json
 import logging
 import time
 from typing import Optional
@@ -27,9 +28,10 @@ from .contracts import (
     KNOWN_CONTRACTS,
 )
 from .analyzer import analyze_wallet
-from .database import save_signal
+from .database import save_signal, count_recent_new_wallets_on_outcome
 from .market_resolver import resolve_market, get_current_price
 from .notifier import send_whale_alert, send_status_message
+from .scorer import score_trade
 
 logger = logging.getLogger(__name__)
 
@@ -131,14 +133,33 @@ async def process_order_filled(
         analysis = await analyze_wallet(wallet, http_client)
 
         if analysis.is_new:
-            # Resolve the market name
+            # Resolve the market name and current price
             market_info = await resolve_market(ctf_token_id, http_client)
+            entry_price = await get_current_price(ctf_token_id, http_client)
+
+            # Check for cluster behavior (other new wallets on same outcome)
+            cluster_count = await count_recent_new_wallets_on_outcome(
+                ctf_token_id, wallet
+            )
+
+            # Calculate suspicion score
+            score = score_trade(
+                account_age_days=analysis.account_age_days,
+                total_trades=analysis.total_trades,
+                total_volume_usdc=analysis.total_volume_usdc,
+                trade_size_usdc=usdc_amount,
+                entry_price=entry_price,
+                side=wallet_side,
+                unique_markets=analysis.unique_markets,
+                cluster_count=cluster_count,
+            )
 
             logger.info(
                 f"🚨 NEW WHALE: {wallet[:10]}... | "
                 f"${usdc_amount:,.2f} | "
                 f"{analysis.total_trades} prior trades | "
                 f"{analysis.account_age_days} days old | "
+                f"Score: {score.total} ({score.tier}) | "
                 f"{market_info.get('title', '?')[:40]}"
             )
 
@@ -149,10 +170,8 @@ async def process_order_filled(
                 side=wallet_side,
                 tx_hash=tx_hash,
                 exchange=exchange_name,
+                score=score,
             )
-
-            # Capture current entry price and save signal for paper trading
-            entry_price = await get_current_price(ctf_token_id, http_client)
 
             await save_signal({
                 "wallet": wallet,
@@ -170,6 +189,10 @@ async def process_order_filled(
                 "pseudonym": analysis.pseudonym,
                 "condition_id": market_info.get("condition_id", ""),
                 "market_slug": market_info.get("slug", ""),
+                "suspicion_score": score.total,
+                "score_tier": score.tier,
+                "score_breakdown": json.dumps(score.components),
+                "unique_markets": analysis.unique_markets,
             })
 
 

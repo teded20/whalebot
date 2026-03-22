@@ -16,10 +16,25 @@ export interface Signal {
   pseudonym: string | null;
   condition_id: string;
   market_slug: string;
+  suspicion_score: number;
+  score_tier: string;
+  score_breakdown: string;
+  unique_markets: number;
   resolved: boolean;
   won: boolean | null;
   winning_outcome: string | null;
   resolved_at: string | null;
+}
+
+export interface ScoreBucket {
+  bucket: string;
+  min: number;
+  max: number;
+  signals: number;
+  wins: number;
+  losses: number;
+  pending: number;
+  win_rate: number | null;
 }
 
 export interface ThresholdBucket {

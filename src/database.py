@@ -39,6 +39,11 @@ CREATE TABLE IF NOT EXISTS signals (
     pseudonym       TEXT,
     condition_id    TEXT NOT NULL DEFAULT '',
     market_slug     TEXT NOT NULL DEFAULT '',
+    -- Suspicion scoring
+    suspicion_score INTEGER NOT NULL DEFAULT 0,
+    score_tier      TEXT NOT NULL DEFAULT 'LOW',
+    score_breakdown TEXT NOT NULL DEFAULT '{}',
+    unique_markets  INTEGER NOT NULL DEFAULT 0,
     -- Resolution fields (filled in later by settlement checker)
     resolved        BOOLEAN NOT NULL DEFAULT FALSE,
     won             BOOLEAN,
@@ -51,6 +56,7 @@ CREATE TABLE IF NOT EXISTS signals (
 CREATE INDEX IF NOT EXISTS idx_signals_resolved ON signals(resolved) WHERE NOT resolved;
 CREATE INDEX IF NOT EXISTS idx_signals_created ON signals(created_at);
 CREATE INDEX IF NOT EXISTS idx_signals_size ON signals(trade_size_usdc);
+CREATE INDEX IF NOT EXISTS idx_signals_score ON signals(suspicion_score);
 """
 
 
@@ -74,6 +80,21 @@ async def init_db():
             statement = statement.strip()
             if statement:
                 await conn.execute(statement)
+
+        # Migrate: add scoring columns if they don't exist yet
+        for col, defn in [
+            ("suspicion_score", "INTEGER NOT NULL DEFAULT 0"),
+            ("score_tier", "TEXT NOT NULL DEFAULT 'LOW'"),
+            ("score_breakdown", "TEXT NOT NULL DEFAULT '{}'"),
+            ("unique_markets", "INTEGER NOT NULL DEFAULT 0"),
+        ]:
+            try:
+                await conn.execute(
+                    f"ALTER TABLE signals ADD COLUMN IF NOT EXISTS {col} {defn}"
+                )
+            except Exception:
+                pass  # Column already exists
+
         await conn.commit()
 
     logger.info("Database initialized")
@@ -104,12 +125,14 @@ async def save_signal(data: dict) -> Optional[int]:
                     wallet, trade_size_usdc, side, ctf_token_id,
                     market_title, outcome, exchange, tx_hash,
                     account_age_days, total_trades, total_volume_usdc,
-                    entry_price, pseudonym, condition_id, market_slug
+                    entry_price, pseudonym, condition_id, market_slug,
+                    suspicion_score, score_tier, score_breakdown, unique_markets
                 ) VALUES (
                     %(wallet)s, %(trade_size_usdc)s, %(side)s, %(ctf_token_id)s,
                     %(market_title)s, %(outcome)s, %(exchange)s, %(tx_hash)s,
                     %(account_age_days)s, %(total_trades)s, %(total_volume_usdc)s,
-                    %(entry_price)s, %(pseudonym)s, %(condition_id)s, %(market_slug)s
+                    %(entry_price)s, %(pseudonym)s, %(condition_id)s, %(market_slug)s,
+                    %(suspicion_score)s, %(score_tier)s, %(score_breakdown)s, %(unique_markets)s
                 )
                 ON CONFLICT (tx_hash, wallet, ctf_token_id) DO NOTHING
                 RETURNING id
@@ -129,6 +152,36 @@ async def save_signal(data: dict) -> Optional[int]:
     except Exception as e:
         logger.error(f"Failed to save signal: {e}")
         return None
+
+
+async def count_recent_new_wallets_on_outcome(
+    ctf_token_id: str, exclude_wallet: str, hours: int = 24
+) -> int:
+    """Count other new-wallet signals on the same outcome in the last N hours.
+
+    This detects cluster behavior: multiple fresh wallets piling into
+    the same outcome is a strong insider signal (Iran strikes: 6 wallets,
+    OpenAI launches: 13 wallets, Axiom: 12 wallets).
+    """
+    if _pool is None:
+        return 0
+
+    try:
+        async with _pool.connection() as conn:
+            row = await (await conn.execute(
+                """
+                SELECT COUNT(*) as cnt FROM signals
+                WHERE ctf_token_id = %s
+                  AND LOWER(wallet) != LOWER(%s)
+                  AND account_age_days <= 7
+                  AND created_at > NOW() - INTERVAL '1 hour' * %s
+                """,
+                (ctf_token_id, exclude_wallet, hours),
+            )).fetchone()
+            return row["cnt"] if row else 0
+    except Exception as e:
+        logger.error(f"Failed to count cluster signals: {e}")
+        return 0
 
 
 async def get_unresolved_signals(max_age_days: int = 90) -> list[dict]:

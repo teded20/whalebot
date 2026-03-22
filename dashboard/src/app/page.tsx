@@ -1,5 +1,5 @@
 import { getDb } from "@/lib/db";
-import type { Signal, ThresholdBucket, AgeBucket } from "@/lib/types";
+import type { Signal, ThresholdBucket, AgeBucket, ScoreBucket } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -69,10 +69,42 @@ async function getStats() {
     });
   }
 
+  // By suspicion score bucket
+  const SCORE_BUCKETS = [
+    { label: "HIGH (60-100)", min: 60, max: 101 },
+    { label: "MEDIUM (30-59)", min: 30, max: 60 },
+    { label: "LOW (0-29)", min: 0, max: 30 },
+  ];
+  const byScore: ScoreBucket[] = [];
+  for (const { label, min, max } of SCORE_BUCKETS) {
+    const rows = await sql`
+      SELECT
+        COUNT(*)::int as signals,
+        COUNT(*) FILTER (WHERE resolved AND won)::int as wins,
+        COUNT(*) FILTER (WHERE resolved AND NOT won)::int as losses,
+        COUNT(*) FILTER (WHERE NOT resolved)::int as pending
+      FROM signals
+      WHERE suspicion_score >= ${min} AND suspicion_score < ${max}
+    `;
+    const r = rows[0];
+    const resolved = r.wins + r.losses;
+    byScore.push({
+      bucket: label,
+      min,
+      max,
+      signals: r.signals,
+      wins: r.wins,
+      losses: r.losses,
+      pending: r.pending,
+      win_rate: resolved > 0 ? r.wins / resolved : null,
+    });
+  }
+
   const recent = await sql`
     SELECT id, created_at, wallet, trade_size_usdc, side,
            market_title, outcome, account_age_days, total_trades,
-           entry_price, resolved, won, winning_outcome, market_slug
+           entry_price, resolved, won, winning_outcome, market_slug,
+           suspicion_score, score_tier, score_breakdown, unique_markets
     FROM signals
     ORDER BY created_at DESC
     LIMIT 30
@@ -86,6 +118,7 @@ async function getStats() {
     total_resolved: totals[0].wins + totals[0].losses,
     by_threshold: byThreshold,
     by_age: byAge,
+    by_score: byScore,
     recent_signals: recent as unknown as Signal[],
   };
 }
@@ -109,6 +142,71 @@ function WinRate({ rate }: { rate: number | null }) {
         ? "text-yellow-400"
         : "text-red-400";
   return <span className={color}>{pct}%</span>;
+}
+
+function ScoreBadge({ score, tier }: { score: number; tier: string }) {
+  const color =
+    tier === "HIGH"
+      ? "bg-red-500/20 text-red-400 border-red-500/30"
+      : tier === "MEDIUM"
+        ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/30"
+        : "bg-zinc-500/20 text-zinc-400 border-zinc-500/30";
+  return (
+    <span
+      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-mono border ${color}`}
+    >
+      {score}
+    </span>
+  );
+}
+
+function ScoreBar({ score }: { score: number }) {
+  const pct = Math.min(score, 100);
+  const color =
+    pct >= 60
+      ? "bg-red-500"
+      : pct >= 30
+        ? "bg-yellow-500"
+        : "bg-zinc-500";
+  return (
+    <div className="w-16 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+      <div
+        className={`h-full rounded-full ${color}`}
+        style={{ width: `${pct}%` }}
+      />
+    </div>
+  );
+}
+
+const FACTOR_LABELS: Record<string, string> = {
+  age: "Account Age",
+  low_prob: "Low Probability",
+  size: "Trade Size",
+  concentration: "Concentrated",
+  size_ratio: "Size vs History",
+  cluster: "Cluster Activity",
+};
+
+function ScoreTooltip({ breakdown }: { breakdown: string }) {
+  try {
+    const factors = JSON.parse(breakdown) as Record<string, number>;
+    const entries = Object.entries(factors).filter(([, v]) => v > 0);
+    if (entries.length === 0) return null;
+    return (
+      <div className="flex flex-wrap gap-1">
+        {entries.map(([key, pts]) => (
+          <span
+            key={key}
+            className="text-[10px] font-mono bg-zinc-800 text-zinc-400 px-1 rounded"
+          >
+            {FACTOR_LABELS[key] || key} +{pts}
+          </span>
+        ))}
+      </div>
+    );
+  } catch {
+    return null;
+  }
 }
 
 export default async function Dashboard() {
@@ -256,6 +354,70 @@ export default async function Dashboard() {
         </div>
       </div>
 
+      {/* By Suspicion Score */}
+      <div className="rounded-lg border border-zinc-800 bg-zinc-900">
+        <div className="px-4 py-3 border-b border-zinc-800 flex items-center justify-between">
+          <h2 className="text-sm font-medium text-zinc-300">
+            Win Rate by Suspicion Score
+          </h2>
+          <a
+            href="/scoring"
+            className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+          >
+            How scoring works &rarr;
+          </a>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-zinc-500 text-xs">
+                <th className="px-4 py-2 text-left">Score Tier</th>
+                <th className="px-4 py-2 text-right">Signals</th>
+                <th className="px-4 py-2 text-right">Wins</th>
+                <th className="px-4 py-2 text-right">Losses</th>
+                <th className="px-4 py-2 text-right">Pending</th>
+                <th className="px-4 py-2 text-right">Win Rate</th>
+              </tr>
+            </thead>
+            <tbody>
+              {stats.by_score.map((b) => {
+                const tierColor =
+                  b.min >= 60
+                    ? "text-red-400"
+                    : b.min >= 30
+                      ? "text-yellow-400"
+                      : "text-zinc-400";
+                return (
+                  <tr
+                    key={b.bucket}
+                    className="border-t border-zinc-800/50"
+                  >
+                    <td className={`px-4 py-2 font-mono ${tierColor}`}>
+                      {b.bucket}
+                    </td>
+                    <td className="px-4 py-2 text-right font-mono">
+                      {b.signals}
+                    </td>
+                    <td className="px-4 py-2 text-right font-mono text-green-400">
+                      {b.wins}
+                    </td>
+                    <td className="px-4 py-2 text-right font-mono text-red-400">
+                      {b.losses}
+                    </td>
+                    <td className="px-4 py-2 text-right font-mono text-zinc-500">
+                      {b.pending}
+                    </td>
+                    <td className="px-4 py-2 text-right font-mono">
+                      <WinRate rate={b.win_rate} />
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       {/* Recent Signals */}
       <div className="rounded-lg border border-zinc-800 bg-zinc-900">
         <div className="px-4 py-3 border-b border-zinc-800">
@@ -273,6 +435,7 @@ export default async function Dashboard() {
                 <th className="px-4 py-2 text-right">Size</th>
                 <th className="px-4 py-2 text-right">Entry</th>
                 <th className="px-4 py-2 text-right">Age</th>
+                <th className="px-4 py-2 text-center">Score</th>
                 <th className="px-4 py-2 text-left">Status</th>
               </tr>
             </thead>
@@ -280,7 +443,7 @@ export default async function Dashboard() {
               {stats.recent_signals.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={7}
+                    colSpan={8}
                     className="px-4 py-8 text-center text-zinc-500"
                   >
                     No signals yet. Start the bot to begin collecting data.
@@ -342,6 +505,15 @@ export default async function Dashboard() {
                       </td>
                       <td className="px-4 py-2 text-right font-mono text-zinc-400">
                         {s.account_age_days}d
+                      </td>
+                      <td className="px-4 py-2">
+                        <div className="flex flex-col items-center gap-1">
+                          <ScoreBadge
+                            score={s.suspicion_score}
+                            tier={s.score_tier}
+                          />
+                          <ScoreBar score={s.suspicion_score} />
+                        </div>
                       </td>
                       <td
                         className={`px-4 py-2 font-mono font-semibold ${statusColor}`}
