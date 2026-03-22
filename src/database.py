@@ -56,7 +56,6 @@ CREATE TABLE IF NOT EXISTS signals (
 CREATE INDEX IF NOT EXISTS idx_signals_resolved ON signals(resolved) WHERE NOT resolved;
 CREATE INDEX IF NOT EXISTS idx_signals_created ON signals(created_at);
 CREATE INDEX IF NOT EXISTS idx_signals_size ON signals(trade_size_usdc);
-CREATE INDEX IF NOT EXISTS idx_signals_score ON signals(suspicion_score);
 """
 
 
@@ -95,6 +94,9 @@ async def init_db():
             except Exception:
                 pass  # Column already exists
 
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_signals_score ON signals(suspicion_score)"
+        )
         await conn.commit()
 
     logger.info("Database initialized")
