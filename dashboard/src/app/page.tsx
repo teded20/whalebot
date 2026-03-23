@@ -1,5 +1,12 @@
 import { getDb } from "@/lib/db";
-import type { Signal, ThresholdBucket, AgeBucket, ScoreBucket } from "@/lib/types";
+import type {
+  Signal,
+  ThresholdBucket,
+  AgeBucket,
+  ScoreBucket,
+} from "@/lib/types";
+import { Suspense } from "react";
+import Filters from "./filters";
 
 export const dynamic = "force-dynamic";
 
@@ -10,19 +17,98 @@ const AGE_BUCKETS = [
   { label: "3-7d", min: 3, max: 7 },
   { label: "7d+", min: 7, max: 9999 },
 ];
+const SCORE_BUCKETS = [
+  { label: "HIGH (60-100)", min: 60, max: 101 },
+  { label: "MEDIUM (30-59)", min: 30, max: 60 },
+  { label: "LOW (0-29)", min: 0, max: 30 },
+];
 
-async function getStats() {
+interface FilterParams {
+  score?: string;
+  size?: string;
+  age?: string;
+  status?: string;
+  side?: string;
+}
+
+function buildWhereClause(filters: FilterParams): {
+  clause: string;
+  description: string;
+} {
+  const conditions: string[] = [];
+  const parts: string[] = [];
+
+  if (filters.score) {
+    const tier = filters.score.toUpperCase();
+    if (tier === "HIGH") {
+      conditions.push("suspicion_score >= 60");
+      parts.push("HIGH score");
+    } else if (tier === "MEDIUM") {
+      conditions.push("suspicion_score >= 30 AND suspicion_score < 60");
+      parts.push("MEDIUM score");
+    } else if (tier === "LOW") {
+      conditions.push("suspicion_score < 30");
+      parts.push("LOW score");
+    }
+  }
+
+  if (filters.size) {
+    const min = parseInt(filters.size, 10);
+    if (min > 0) {
+      conditions.push(`trade_size_usdc >= ${min}`);
+      parts.push(`≥$${(min / 1000).toFixed(0)}K`);
+    }
+  }
+
+  if (filters.age) {
+    const [minAge, maxAge] = filters.age.split("-").map(Number);
+    if (!isNaN(minAge) && !isNaN(maxAge)) {
+      conditions.push(
+        `account_age_days >= ${minAge} AND account_age_days < ${maxAge}`,
+      );
+      parts.push(`${minAge}-${maxAge}d age`);
+    }
+  }
+
+  if (filters.status) {
+    if (filters.status === "win") {
+      conditions.push("resolved AND won");
+      parts.push("wins");
+    } else if (filters.status === "loss") {
+      conditions.push("resolved AND NOT won");
+      parts.push("losses");
+    } else if (filters.status === "pending") {
+      conditions.push("NOT resolved");
+      parts.push("pending");
+    }
+  }
+
+  if (filters.side) {
+    const s = filters.side.toUpperCase();
+    if (s === "BUY" || s === "SELL") {
+      conditions.push(`side = '${s}'`);
+      parts.push(s);
+    }
+  }
+
+  return {
+    clause: conditions.length > 0 ? "WHERE " + conditions.join(" AND ") : "",
+    description: parts.length > 0 ? parts.join(", ") : "all signals",
+  };
+}
+
+async function getStats(filters: FilterParams) {
   const sql = getDb();
+  const { clause } = buildWhereClause(filters);
 
-  const totals = await sql`
-    SELECT
-      COUNT(*)::int as total,
+  // Totals (filtered)
+  const totals = (await sql.unsafe(`SELECT COUNT(*)::int as total,
       COUNT(*) FILTER (WHERE resolved AND won)::int as wins,
       COUNT(*) FILTER (WHERE resolved AND NOT won)::int as losses,
       COUNT(*) FILTER (WHERE NOT resolved)::int as pending
-    FROM signals
-  `;
+    FROM signals ${clause}`)) as unknown as Record<string, number>[];
 
+  // By threshold (unfiltered — always show full breakdown)
   const byThreshold: ThresholdBucket[] = [];
   for (const threshold of THRESHOLDS) {
     const rows = await sql`
@@ -46,6 +132,7 @@ async function getStats() {
     });
   }
 
+  // By age (unfiltered)
   const byAge: AgeBucket[] = [];
   for (const { label, min, max } of AGE_BUCKETS) {
     const rows = await sql`
@@ -69,12 +156,7 @@ async function getStats() {
     });
   }
 
-  // By suspicion score bucket
-  const SCORE_BUCKETS = [
-    { label: "HIGH (60-100)", min: 60, max: 101 },
-    { label: "MEDIUM (30-59)", min: 30, max: 60 },
-    { label: "LOW (0-29)", min: 0, max: 30 },
-  ];
+  // By score (unfiltered)
   const byScore: ScoreBucket[] = [];
   for (const { label, min, max } of SCORE_BUCKETS) {
     const rows = await sql`
@@ -100,15 +182,17 @@ async function getStats() {
     });
   }
 
-  const recent = await sql`
+  // Recent signals (filtered)
+  const recent = (await sql.unsafe(`
     SELECT id, created_at, wallet, trade_size_usdc, side,
            market_title, outcome, account_age_days, total_trades,
            entry_price, resolved, won, winning_outcome, market_slug,
            suspicion_score, score_tier, score_breakdown, unique_markets
     FROM signals
+    ${clause}
     ORDER BY created_at DESC
-    LIMIT 30
-  `;
+    LIMIT 50
+  `)) as unknown as Signal[];
 
   return {
     total_signals: totals[0].total,
@@ -119,7 +203,7 @@ async function getStats() {
     by_threshold: byThreshold,
     by_age: byAge,
     by_score: byScore,
-    recent_signals: recent as unknown as Signal[],
+    recent_signals: recent,
   };
 }
 
@@ -193,7 +277,7 @@ function ScoreTooltip({ breakdown }: { breakdown: string }) {
     const entries = Object.entries(factors).filter(([, v]) => v > 0);
     if (entries.length === 0) return null;
     return (
-      <div className="flex flex-wrap gap-1">
+      <div className="flex flex-wrap gap-1 mt-1">
         {entries.map(([key, pts]) => (
           <span
             key={key}
@@ -209,11 +293,39 @@ function ScoreTooltip({ breakdown }: { breakdown: string }) {
   }
 }
 
-export default async function Dashboard() {
-  const stats = await getStats();
+export default async function Dashboard({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const params = await searchParams;
+  const filters: FilterParams = {
+    score: typeof params.score === "string" ? params.score : undefined,
+    size: typeof params.size === "string" ? params.size : undefined,
+    age: typeof params.age === "string" ? params.age : undefined,
+    status: typeof params.status === "string" ? params.status : undefined,
+    side: typeof params.side === "string" ? params.side : undefined,
+  };
+
+  const hasFilters = Object.values(filters).some(Boolean);
+  const { description } = buildWhereClause(filters);
+  const stats = await getStats(filters);
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
+      {/* Filters */}
+      <Suspense>
+        <Filters />
+      </Suspense>
+
+      {/* Active filter indicator */}
+      {hasFilters && (
+        <div className="text-xs text-zinc-500">
+          Showing <span className="text-zinc-300">{description}</span>{" "}
+          &middot; {stats.total_signals} signals
+        </div>
+      )}
+
       {/* Summary Cards */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         {[
@@ -256,165 +368,160 @@ export default async function Dashboard() {
         ))}
       </div>
 
-      {/* By Threshold */}
-      <div className="rounded-lg border border-zinc-800 bg-zinc-900">
-        <div className="px-4 py-3 border-b border-zinc-800">
-          <h2 className="text-sm font-medium text-zinc-300">
-            Win Rate by Trade Size
-          </h2>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-zinc-500 text-xs">
-                <th className="px-4 py-2 text-left">Threshold</th>
-                <th className="px-4 py-2 text-right">Signals</th>
-                <th className="px-4 py-2 text-right">Wins</th>
-                <th className="px-4 py-2 text-right">Losses</th>
-                <th className="px-4 py-2 text-right">Pending</th>
-                <th className="px-4 py-2 text-right">Win Rate</th>
-              </tr>
-            </thead>
-            <tbody>
-              {stats.by_threshold.map((b) => (
-                <tr
-                  key={b.threshold}
-                  className="border-t border-zinc-800/50"
-                >
-                  <td className="px-4 py-2 font-mono">
-                    {formatUsd(b.threshold)}+
-                  </td>
-                  <td className="px-4 py-2 text-right font-mono">
-                    {b.signals}
-                  </td>
-                  <td className="px-4 py-2 text-right font-mono text-green-400">
-                    {b.wins}
-                  </td>
-                  <td className="px-4 py-2 text-right font-mono text-red-400">
-                    {b.losses}
-                  </td>
-                  <td className="px-4 py-2 text-right font-mono text-zinc-500">
-                    {b.pending}
-                  </td>
-                  <td className="px-4 py-2 text-right font-mono">
-                    <WinRate rate={b.win_rate} />
-                  </td>
+      {/* Analytics Tables */}
+      <div className="grid gap-6 lg:grid-cols-3">
+        {/* By Threshold */}
+        <div className="rounded-lg border border-zinc-800 bg-zinc-900">
+          <div className="px-4 py-3 border-b border-zinc-800">
+            <h2 className="text-sm font-medium text-zinc-300">
+              By Trade Size
+            </h2>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-zinc-500 text-xs">
+                  <th className="px-3 py-2 text-left">Min</th>
+                  <th className="px-3 py-2 text-right">Sig</th>
+                  <th className="px-3 py-2 text-right">W</th>
+                  <th className="px-3 py-2 text-right">L</th>
+                  <th className="px-3 py-2 text-right">Win%</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {stats.by_threshold.map((b) => (
+                  <tr
+                    key={b.threshold}
+                    className="border-t border-zinc-800/50"
+                  >
+                    <td className="px-3 py-1.5 font-mono text-xs">
+                      {formatUsd(b.threshold)}+
+                    </td>
+                    <td className="px-3 py-1.5 text-right font-mono text-xs">
+                      {b.signals}
+                    </td>
+                    <td className="px-3 py-1.5 text-right font-mono text-xs text-green-400">
+                      {b.wins}
+                    </td>
+                    <td className="px-3 py-1.5 text-right font-mono text-xs text-red-400">
+                      {b.losses}
+                    </td>
+                    <td className="px-3 py-1.5 text-right font-mono text-xs">
+                      <WinRate rate={b.win_rate} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
-      </div>
 
-      {/* By Account Age */}
-      <div className="rounded-lg border border-zinc-800 bg-zinc-900">
-        <div className="px-4 py-3 border-b border-zinc-800">
-          <h2 className="text-sm font-medium text-zinc-300">
-            Win Rate by Account Age
-          </h2>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-zinc-500 text-xs">
-                <th className="px-4 py-2 text-left">Age</th>
-                <th className="px-4 py-2 text-right">Signals</th>
-                <th className="px-4 py-2 text-right">Wins</th>
-                <th className="px-4 py-2 text-right">Losses</th>
-                <th className="px-4 py-2 text-right">Pending</th>
-                <th className="px-4 py-2 text-right">Win Rate</th>
-              </tr>
-            </thead>
-            <tbody>
-              {stats.by_age.map((b) => (
-                <tr
-                  key={b.bucket}
-                  className="border-t border-zinc-800/50"
-                >
-                  <td className="px-4 py-2 font-mono">{b.bucket}</td>
-                  <td className="px-4 py-2 text-right font-mono">
-                    {b.signals}
-                  </td>
-                  <td className="px-4 py-2 text-right font-mono text-green-400">
-                    {b.wins}
-                  </td>
-                  <td className="px-4 py-2 text-right font-mono text-red-400">
-                    {b.losses}
-                  </td>
-                  <td className="px-4 py-2 text-right font-mono text-zinc-500">
-                    {b.pending}
-                  </td>
-                  <td className="px-4 py-2 text-right font-mono">
-                    <WinRate rate={b.win_rate} />
-                  </td>
+        {/* By Account Age */}
+        <div className="rounded-lg border border-zinc-800 bg-zinc-900">
+          <div className="px-4 py-3 border-b border-zinc-800">
+            <h2 className="text-sm font-medium text-zinc-300">
+              By Account Age
+            </h2>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-zinc-500 text-xs">
+                  <th className="px-3 py-2 text-left">Age</th>
+                  <th className="px-3 py-2 text-right">Sig</th>
+                  <th className="px-3 py-2 text-right">W</th>
+                  <th className="px-3 py-2 text-right">L</th>
+                  <th className="px-3 py-2 text-right">Win%</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* By Suspicion Score */}
-      <div className="rounded-lg border border-zinc-800 bg-zinc-900">
-        <div className="px-4 py-3 border-b border-zinc-800 flex items-center justify-between">
-          <h2 className="text-sm font-medium text-zinc-300">
-            Win Rate by Suspicion Score
-          </h2>
-          <a
-            href="/scoring"
-            className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
-          >
-            How scoring works &rarr;
-          </a>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-zinc-500 text-xs">
-                <th className="px-4 py-2 text-left">Score Tier</th>
-                <th className="px-4 py-2 text-right">Signals</th>
-                <th className="px-4 py-2 text-right">Wins</th>
-                <th className="px-4 py-2 text-right">Losses</th>
-                <th className="px-4 py-2 text-right">Pending</th>
-                <th className="px-4 py-2 text-right">Win Rate</th>
-              </tr>
-            </thead>
-            <tbody>
-              {stats.by_score.map((b) => {
-                const tierColor =
-                  b.min >= 60
-                    ? "text-red-400"
-                    : b.min >= 30
-                      ? "text-yellow-400"
-                      : "text-zinc-400";
-                return (
+              </thead>
+              <tbody>
+                {stats.by_age.map((b) => (
                   <tr
                     key={b.bucket}
                     className="border-t border-zinc-800/50"
                   >
-                    <td className={`px-4 py-2 font-mono ${tierColor}`}>
+                    <td className="px-3 py-1.5 font-mono text-xs">
                       {b.bucket}
                     </td>
-                    <td className="px-4 py-2 text-right font-mono">
+                    <td className="px-3 py-1.5 text-right font-mono text-xs">
                       {b.signals}
                     </td>
-                    <td className="px-4 py-2 text-right font-mono text-green-400">
+                    <td className="px-3 py-1.5 text-right font-mono text-xs text-green-400">
                       {b.wins}
                     </td>
-                    <td className="px-4 py-2 text-right font-mono text-red-400">
+                    <td className="px-3 py-1.5 text-right font-mono text-xs text-red-400">
                       {b.losses}
                     </td>
-                    <td className="px-4 py-2 text-right font-mono text-zinc-500">
-                      {b.pending}
-                    </td>
-                    <td className="px-4 py-2 text-right font-mono">
+                    <td className="px-3 py-1.5 text-right font-mono text-xs">
                       <WinRate rate={b.win_rate} />
                     </td>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* By Suspicion Score */}
+        <div className="rounded-lg border border-zinc-800 bg-zinc-900">
+          <div className="px-4 py-3 border-b border-zinc-800 flex items-center justify-between">
+            <h2 className="text-sm font-medium text-zinc-300">
+              By Suspicion Score
+            </h2>
+            <a
+              href="/scoring"
+              className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+            >
+              How it works &rarr;
+            </a>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-zinc-500 text-xs">
+                  <th className="px-3 py-2 text-left">Tier</th>
+                  <th className="px-3 py-2 text-right">Sig</th>
+                  <th className="px-3 py-2 text-right">W</th>
+                  <th className="px-3 py-2 text-right">L</th>
+                  <th className="px-3 py-2 text-right">Win%</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stats.by_score.map((b) => {
+                  const tierColor =
+                    b.min >= 60
+                      ? "text-red-400"
+                      : b.min >= 30
+                        ? "text-yellow-400"
+                        : "text-zinc-400";
+                  return (
+                    <tr
+                      key={b.bucket}
+                      className="border-t border-zinc-800/50"
+                    >
+                      <td
+                        className={`px-3 py-1.5 font-mono text-xs ${tierColor}`}
+                      >
+                        {b.bucket}
+                      </td>
+                      <td className="px-3 py-1.5 text-right font-mono text-xs">
+                        {b.signals}
+                      </td>
+                      <td className="px-3 py-1.5 text-right font-mono text-xs text-green-400">
+                        {b.wins}
+                      </td>
+                      <td className="px-3 py-1.5 text-right font-mono text-xs text-red-400">
+                        {b.losses}
+                      </td>
+                      <td className="px-3 py-1.5 text-right font-mono text-xs">
+                        <WinRate rate={b.win_rate} />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
 
@@ -422,7 +529,11 @@ export default async function Dashboard() {
       <div className="rounded-lg border border-zinc-800 bg-zinc-900">
         <div className="px-4 py-3 border-b border-zinc-800">
           <h2 className="text-sm font-medium text-zinc-300">
-            Recent Signals
+            {hasFilters ? "Filtered Signals" : "Recent Signals"}
+            <span className="text-zinc-500 font-normal ml-2">
+              ({stats.recent_signals.length}
+              {stats.recent_signals.length === 50 ? "+" : ""})
+            </span>
           </h2>
         </div>
         <div className="overflow-x-auto">
@@ -446,7 +557,9 @@ export default async function Dashboard() {
                     colSpan={8}
                     className="px-4 py-8 text-center text-zinc-500"
                   >
-                    No signals yet. Start the bot to begin collecting data.
+                    {hasFilters
+                      ? "No signals match these filters."
+                      : "No signals yet. Start the bot to begin collecting data."}
                   </td>
                 </tr>
               ) : (
@@ -467,13 +580,13 @@ export default async function Dashboard() {
                   return (
                     <tr
                       key={s.id}
-                      className="border-t border-zinc-800/50"
+                      className="border-t border-zinc-800/50 hover:bg-zinc-800/30 transition-colors"
                     >
                       <td className="px-4 py-2 font-mono text-zinc-400 text-xs whitespace-nowrap">
-                        {new Date(s.created_at).toLocaleDateString(
-                          "en-US",
-                          { month: "short", day: "numeric" },
-                        )}
+                        {new Date(s.created_at).toLocaleDateString("en-US", {
+                          month: "short",
+                          day: "numeric",
+                        })}
                       </td>
                       <td className="px-4 py-2 max-w-xs truncate">
                         {s.market_slug ? (
@@ -513,6 +626,7 @@ export default async function Dashboard() {
                             tier={s.score_tier}
                           />
                           <ScoreBar score={s.suspicion_score} />
+                          <ScoreTooltip breakdown={s.score_breakdown} />
                         </div>
                       </td>
                       <td
