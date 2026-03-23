@@ -89,6 +89,68 @@ const FACTORS = [
     cases:
       "Iran strikes: 6 coordinated wallets. OpenAI launches: 13 wallets. ZachXBT/Axiom: 12 wallets, 8 of top 10 earners were insiders.",
   },
+  {
+    name: "Repeat Winner",
+    max: 15,
+    description:
+      "A wallet that has won multiple previous insider-style bets is a stronger signal than a first-timer. Win streaks on suspicious trades indicate a persistent insider with ongoing access.",
+    tiers: [
+      { condition: "Win streak \u22655", points: 15 },
+      { condition: "Win streak \u22653", points: 10 },
+      { condition: "Win streak \u22652", points: 5 },
+    ],
+    cases:
+      "Iranian IDF tipster: 7/7 wins across multiple strike events. AlphaRaccoon (Google): 22/23 win rate across product launches.",
+  },
+  {
+    name: "Repeat Offender",
+    max: 5,
+    description:
+      "A wallet appearing repeatedly in our signal database — even without a consistent win streak — suggests habitual use of privileged information rather than a one-off lucky bet.",
+    tiers: [
+      { condition: "Total signals \u22655", points: 5 },
+      { condition: "Total signals \u22653", points: 3 },
+    ],
+    cases:
+      "Wallets that show up across multiple unrelated events are unlikely to be coincidental. Repeated appearance in high-suspicion signals is itself a red flag.",
+  },
+  {
+    name: "Time Proximity",
+    max: 15,
+    description:
+      "Trades placed very close to market resolution — when most participants have exited — are a classic insider pattern. Only someone who knows the imminent outcome would buy in late at near-certain pricing.",
+    tiers: [
+      { condition: "\u22646h to resolution", points: 15 },
+      { condition: "\u226424h to resolution", points: 12 },
+      { condition: "\u226472h to resolution", points: 8 },
+      { condition: "\u22641 week to resolution", points: 3 },
+    ],
+    cases:
+      "ZachXBT/Axiom: trades placed 3h before the reveal. Venezuela/Maduro: heavy buying in final 24h window. Iran strikes: funded and bet same day as event.",
+  },
+  {
+    name: "Shared Funding Source",
+    max: 7,
+    description:
+      "Multiple wallets in the same cluster funded from a single common on-chain source is strong evidence of coordination. It suggests one person or group controlling multiple pseudonymous wallets.",
+    tiers: [
+      { condition: "\u22653 wallets, same source", points: 7 },
+      { condition: "\u22652 wallets, same source", points: 4 },
+    ],
+    cases:
+      "Iran strikes: 6 wallets traced to overlapping Polygon bridge sources. OpenAI: wallets funded in sequence from same originating address.",
+  },
+  {
+    name: "Round Funding",
+    max: 3,
+    description:
+      "Wallets funded with exact thousands of USDC (e.g. $5,000.00, $10,000.00) suggest programmatic or intentional positioning rather than organic activity. Real traders rarely deposit in perfect round numbers.",
+    tiers: [
+      { condition: "USDC deposit was exact thousands", points: 3 },
+    ],
+    cases:
+      "AlphaRaccoon: deposits in clean $5K and $10K increments. Multiple Iran-linked wallets funded with exact $3,000 and $5,000 deposits.",
+  },
 ];
 
 const TIERS = [
@@ -177,7 +239,7 @@ export default function ScoringPage() {
         <p className="text-sm text-zinc-400 mt-2 max-w-2xl">
           Each whale trade is scored 0-100 based on how closely it matches
           patterns from documented insider trading cases on Polymarket. The
-          score is computed from six weighted factors derived from real
+          score is computed from eleven weighted factors derived from real
           incidents.
         </p>
       </div>
@@ -288,6 +350,60 @@ export default function ScoringPage() {
               ))}
             </tbody>
           </table>
+        </div>
+      </div>
+
+      {/* Score Breakdowns */}
+      <div>
+        <h2 className="text-sm font-medium text-zinc-300 mb-3">
+          Real-World Case Studies
+        </h2>
+        <p className="text-xs text-zinc-500 mb-3">
+          How the new scoring factors change estimated scores for documented cases.
+        </p>
+        <div className="space-y-3">
+          {[
+            {
+              name: "Venezuela / Maduro",
+              breakdown: "age(25) + low_prob(25) + size(15) + concentration(15) + time(15)",
+              total: 95,
+            },
+            {
+              name: "Iran / IDF (7/7 wins)",
+              breakdown: "age(25) + low_prob(25) + size(15) + repeat_winner(15) + time(15)",
+              total: 95,
+            },
+            {
+              name: "Iran / 6 wallets",
+              breakdown: "age(25) + low_prob(25) + size(12) + cluster(10) + shared_funding(7) + time(15)",
+              total: 94,
+            },
+            {
+              name: "AlphaRaccoon (Google)",
+              breakdown: "low_prob(25) + size(15) + concentration(15) + repeat_winner(15) + round_funding(3)",
+              total: 73,
+            },
+            {
+              name: "OpenAI / 13 wallets",
+              breakdown: "age(25) + low_prob(20) + cluster(10) + shared_funding(7) + time(12)",
+              total: 74,
+            },
+          ].map((c) => (
+            <div
+              key={c.name}
+              className="rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 flex flex-wrap items-center gap-3"
+            >
+              <span className="text-sm font-medium text-zinc-200 min-w-[160px]">
+                {c.name}
+              </span>
+              <span className="text-xs font-mono text-zinc-500 flex-1">
+                {c.breakdown}
+              </span>
+              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-mono border bg-red-500/20 text-red-400 border-red-500/30 whitespace-nowrap">
+                = {c.total}
+              </span>
+            </div>
+          ))}
         </div>
       </div>
 
