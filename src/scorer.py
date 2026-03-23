@@ -56,6 +56,8 @@ def score_trade(
     side: str,
     unique_markets: int,
     cluster_count: int = 0,
+    reputation_win_streak: int = 0,
+    reputation_total_signals: int = 0,
 ) -> ScoreBreakdown:
     """Calculate a suspicion score (0-100) for a whale trade.
 
@@ -144,6 +146,21 @@ def score_trade(
         breakdown.add("cluster", 7)
     elif cluster_count >= 1:
         breakdown.add("cluster", 4)
+
+    # --- 7. Repeat offender bonus (max 15 pts) ---
+    # AlphaRaccoon: 22/23 wins. IDF: 7/7. Repeat accuracy = insider.
+    if reputation_win_streak >= 5:
+        breakdown.add("repeat_winner", 15)
+    elif reputation_win_streak >= 3:
+        breakdown.add("repeat_winner", 10)
+    elif reputation_win_streak >= 2:
+        breakdown.add("repeat_winner", 5)
+
+    # Multi-signal wallet that keeps showing up in whale detection
+    if reputation_total_signals >= 5:
+        breakdown.add("repeat_offender", 5)
+    elif reputation_total_signals >= 3:
+        breakdown.add("repeat_offender", 3)
 
     # Cap at 100
     if breakdown.total > 100:

@@ -151,6 +151,12 @@ async def process_order_filled(
                 ctf_token_id, wallet
             )
 
+            # Read wallet reputation (read-only, before scoring)
+            from .database import get_wallet_reputation
+            reputation = await get_wallet_reputation(wallet) or {
+                "suspicion_streak": 0, "total_signals": 0
+            }
+
             # Calculate suspicion score
             score = score_trade(
                 account_age_days=analysis.account_age_days,
@@ -161,6 +167,8 @@ async def process_order_filled(
                 side=wallet_side,
                 unique_markets=analysis.unique_markets,
                 cluster_count=cluster_count,
+                reputation_win_streak=reputation.get("suspicion_streak", 0),
+                reputation_total_signals=reputation.get("total_signals", 0),
             )
 
             logger.info(
@@ -208,6 +216,25 @@ async def process_order_filled(
                 "score_breakdown": json.dumps(score.components),
                 "unique_markets": analysis.unique_markets,
             })
+
+            # Update wallet reputation
+            from .database import upsert_wallet_reputation
+            reputation_updated = await upsert_wallet_reputation(
+                wallet=wallet,
+                trade_size_usdc=usdc_amount,
+                entry_price=entry_price,
+                suspicion_score=score.total,
+                condition_id=market_info.get("condition_id", ""),
+            )
+
+            # Log repeat offenders
+            if reputation_updated["total_signals"] > 1:
+                logger.info(
+                    f"👀 REPEAT WALLET: {wallet[:10]}... | "
+                    f"Signal #{reputation_updated['total_signals']} | "
+                    f"Win streak: {reputation_updated['suspicion_streak']} | "
+                    f"Wins: {reputation_updated['total_wins']}/{reputation_updated['total_resolved']}"
+                )
 
 
 async def poll_events(w3: Web3, http_client: httpx.AsyncClient):

@@ -107,6 +107,10 @@ async def check_settlements():
                 won = whale_outcome != winning_outcome
 
             await update_signal_resolution(signal["id"], won=won, winning_outcome=winning_outcome)
+            from .database import update_wallet_reputation_on_resolution
+            await update_wallet_reputation_on_resolution(
+                wallet=signal["wallet"], won=won
+            )
             resolved += 1
             if won:
                 wins += 1
