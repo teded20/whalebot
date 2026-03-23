@@ -102,11 +102,11 @@ async function getStats(filters: FilterParams) {
   const { clause } = buildWhereClause(filters);
 
   // Totals (filtered)
-  const totals = (await sql.unsafe(`SELECT COUNT(*)::int as total,
+  const totals = await sql`SELECT COUNT(*)::int as total,
       COUNT(*) FILTER (WHERE resolved AND won)::int as wins,
       COUNT(*) FILTER (WHERE resolved AND NOT won)::int as losses,
       COUNT(*) FILTER (WHERE NOT resolved)::int as pending
-    FROM signals ${clause}`)) as unknown as Record<string, number>[];
+    FROM signals ${sql.unsafe(clause)}` as Record<string, number>[];
 
   // By threshold (unfiltered — always show full breakdown)
   const byThreshold: ThresholdBucket[] = [];
@@ -183,16 +183,16 @@ async function getStats(filters: FilterParams) {
   }
 
   // Recent signals (filtered)
-  const recent = (await sql.unsafe(`
+  const recent = await sql`
     SELECT id, created_at, wallet, trade_size_usdc, side,
            market_title, outcome, account_age_days, total_trades,
            entry_price, resolved, won, winning_outcome, market_slug,
            suspicion_score, score_tier, score_breakdown, unique_markets
     FROM signals
-    ${clause}
+    ${sql.unsafe(clause)}
     ORDER BY created_at DESC
     LIMIT 50
-  `)) as unknown as Signal[];
+  ` as unknown as Signal[];
 
   return {
     total_signals: totals[0].total,
