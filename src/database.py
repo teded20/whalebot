@@ -97,6 +97,28 @@ async def init_db():
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_signals_score ON signals(suspicion_score)"
         )
+
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS wallet_reputation (
+                wallet TEXT PRIMARY KEY,
+                first_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                total_signals INT NOT NULL DEFAULT 0,
+                total_resolved INT NOT NULL DEFAULT 0,
+                total_wins INT NOT NULL DEFAULT 0,
+                total_losses INT NOT NULL DEFAULT 0,
+                total_volume_usdc DOUBLE PRECISION NOT NULL DEFAULT 0,
+                avg_entry_probability DOUBLE PRECISION,
+                markets_traded TEXT[] NOT NULL DEFAULT '{}',
+                last_signal_at TIMESTAMPTZ,
+                suspicion_streak INT NOT NULL DEFAULT 0,
+                highest_score INT NOT NULL DEFAULT 0,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_wallet_rep_wins
+                ON wallet_reputation(total_wins);
+            CREATE INDEX IF NOT EXISTS idx_wallet_rep_streak
+                ON wallet_reputation(suspicion_streak);
+        """)
         await conn.commit()
 
     logger.info("Database initialized")
@@ -346,3 +368,71 @@ async def get_stats() -> dict:
             "by_age": by_age,
             "recent_signals": recent,
         }
+
+
+async def upsert_wallet_reputation(
+    wallet: str,
+    trade_size_usdc: float,
+    entry_price: float | None,
+    suspicion_score: int,
+    condition_id: str,
+) -> dict:
+    """Update wallet reputation after a new signal. Returns current reputation."""
+    async with _pool.connection() as conn:
+        row = await conn.execute("""
+            INSERT INTO wallet_reputation (
+                wallet, first_seen, total_signals, total_volume_usdc,
+                markets_traded, last_signal_at, highest_score, updated_at
+            ) VALUES (
+                %(wallet)s, NOW(), 1, %(volume)s,
+                ARRAY[%(cid)s], NOW(), %(score)s, NOW()
+            )
+            ON CONFLICT (wallet) DO UPDATE SET
+                total_signals = wallet_reputation.total_signals + 1,
+                total_volume_usdc = wallet_reputation.total_volume_usdc + %(volume)s,
+                markets_traded = (
+                    SELECT array_agg(DISTINCT m)
+                    FROM unnest(wallet_reputation.markets_traded || ARRAY[%(cid)s]) AS m
+                ),
+                last_signal_at = NOW(),
+                highest_score = GREATEST(wallet_reputation.highest_score, %(score)s),
+                updated_at = NOW()
+            RETURNING *
+        """, {
+            "wallet": wallet.lower(),
+            "volume": trade_size_usdc,
+            "cid": condition_id,
+            "score": suspicion_score,
+        })
+        await conn.commit()
+        return dict(await row.fetchone())
+
+
+async def update_wallet_reputation_on_resolution(
+    wallet: str, won: bool
+) -> None:
+    """Update wallet reputation when a signal resolves."""
+    async with _pool.connection() as conn:
+        await conn.execute("""
+            UPDATE wallet_reputation SET
+                total_resolved = total_resolved + 1,
+                total_wins = total_wins + CASE WHEN %(won)s THEN 1 ELSE 0 END,
+                total_losses = total_losses + CASE WHEN %(won)s THEN 0 ELSE 1 END,
+                suspicion_streak = CASE
+                    WHEN %(won)s THEN suspicion_streak + 1
+                    ELSE 0
+                END,
+                updated_at = NOW()
+            WHERE wallet = %(wallet)s
+        """, {"wallet": wallet.lower(), "won": won})
+        await conn.commit()
+
+
+async def get_wallet_reputation(wallet: str) -> dict | None:
+    """Get wallet reputation. Returns None if wallet not seen before."""
+    async with _pool.connection() as conn:
+        row = await conn.execute("""
+            SELECT * FROM wallet_reputation WHERE wallet = %(wallet)s
+        """, {"wallet": wallet.lower()})
+        result = await row.fetchone()
+        return dict(result) if result else None
