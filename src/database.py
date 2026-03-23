@@ -98,6 +98,15 @@ async def init_db():
             "CREATE INDEX IF NOT EXISTS idx_signals_score ON signals(suspicion_score)"
         )
 
+        # Add hours_to_resolution column
+        try:
+            await conn.execute("""
+                ALTER TABLE signals ADD COLUMN IF NOT EXISTS
+                    hours_to_resolution DOUBLE PRECISION
+            """)
+        except Exception:
+            pass
+
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS wallet_reputation (
                 wallet TEXT PRIMARY KEY,
@@ -150,13 +159,15 @@ async def save_signal(data: dict) -> Optional[int]:
                     market_title, outcome, exchange, tx_hash,
                     account_age_days, total_trades, total_volume_usdc,
                     entry_price, pseudonym, condition_id, market_slug,
-                    suspicion_score, score_tier, score_breakdown, unique_markets
+                    suspicion_score, score_tier, score_breakdown, unique_markets,
+                    hours_to_resolution
                 ) VALUES (
                     %(wallet)s, %(trade_size_usdc)s, %(side)s, %(ctf_token_id)s,
                     %(market_title)s, %(outcome)s, %(exchange)s, %(tx_hash)s,
                     %(account_age_days)s, %(total_trades)s, %(total_volume_usdc)s,
                     %(entry_price)s, %(pseudonym)s, %(condition_id)s, %(market_slug)s,
-                    %(suspicion_score)s, %(score_tier)s, %(score_breakdown)s, %(unique_markets)s
+                    %(suspicion_score)s, %(score_tier)s, %(score_breakdown)s, %(unique_markets)s,
+                    %(hours_to_resolution)s
                 )
                 ON CONFLICT (tx_hash, wallet, ctf_token_id) DO NOTHING
                 RETURNING id

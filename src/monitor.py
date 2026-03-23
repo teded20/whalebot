@@ -229,6 +229,7 @@ async def process_order_filled(
                 "score_tier": score.tier,
                 "score_breakdown": json.dumps(score.components),
                 "unique_markets": analysis.unique_markets,
+                "hours_to_resolution": hours_to_resolution,
             })
 
             # Update wallet reputation
