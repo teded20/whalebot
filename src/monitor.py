@@ -170,6 +170,23 @@ async def process_order_filled(
                 "suspicion_streak": 0, "total_signals": 0
             }
 
+            # Trace funding source (async, non-blocking on failure)
+            try:
+                from .funding import get_funding_source
+                from .database import save_wallet_funding, count_wallets_from_same_source
+                funding = await get_funding_source(wallet, http_client)
+                if funding["funding_source"]:
+                    await save_wallet_funding(wallet, funding)
+                    shared_source_count = await count_wallets_from_same_source(
+                        funding["funding_source"]
+                    )
+                else:
+                    shared_source_count = 0
+            except Exception as e:
+                logger.warning(f"Funding trace failed for {wallet[:10]}...: {e}")
+                funding = {}
+                shared_source_count = 0
+
             # Calculate suspicion score
             score = score_trade(
                 account_age_days=analysis.account_age_days,
@@ -183,6 +200,8 @@ async def process_order_filled(
                 reputation_win_streak=reputation.get("suspicion_streak", 0),
                 reputation_total_signals=reputation.get("total_signals", 0),
                 hours_to_resolution=hours_to_resolution,
+                is_round_funding=funding.get("is_round_amount", False),
+                shared_funding_source_count=shared_source_count,
             )
 
             logger.info(

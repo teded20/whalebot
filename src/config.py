@@ -26,6 +26,9 @@ class Config:
     max_account_age_days: int = int(os.getenv("MAX_ACCOUNT_AGE_DAYS", "7"))
     polling_interval: int = int(os.getenv("POLLING_INTERVAL", "5"))
 
+    # External APIs
+    polygonscan_api_key: str = os.getenv("POLYGONSCAN_API_KEY", "")
+
     def validate(self) -> list[str]:
         """Return list of missing required config fields."""
         errors = []

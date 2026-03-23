@@ -59,6 +59,8 @@ def score_trade(
     reputation_win_streak: int = 0,
     reputation_total_signals: int = 0,
     hours_to_resolution: float | None = None,
+    is_round_funding: bool = False,
+    shared_funding_source_count: int = 0,
 ) -> ScoreBreakdown:
     """Calculate a suspicion score (0-100) for a whale trade.
 
@@ -175,6 +177,17 @@ def score_trade(
             breakdown.add("time_proximity", 8)
         elif hours_to_resolution <= 168:  # 1 week
             breakdown.add("time_proximity", 3)
+
+    # --- 9. Funding source suspicion (max 10 pts) ---
+    # Iran case: 6 wallets from shared Binance address.
+    # Round-number deposits + shared source = coordinated.
+    if shared_funding_source_count >= 3:
+        breakdown.add("shared_funding", 7)
+    elif shared_funding_source_count >= 2:
+        breakdown.add("shared_funding", 4)
+
+    if is_round_funding:
+        breakdown.add("round_funding", 3)
 
     # Cap at 100
     if breakdown.total > 100:
