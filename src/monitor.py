@@ -163,15 +163,19 @@ async def process_order_filled(
                 f"{market_info.get('title', '?')[:40]}"
             )
 
-            await send_whale_alert(
-                analysis=analysis,
-                trade_size_usdc=usdc_amount,
-                market_info=market_info,
-                side=wallet_side,
-                tx_hash=tx_hash,
-                exchange=exchange_name,
-                score=score,
-            )
+            # Only send Telegram alerts for HIGH suspicion scores
+            if score.tier == "HIGH":
+                await send_whale_alert(
+                    analysis=analysis,
+                    trade_size_usdc=usdc_amount,
+                    market_info=market_info,
+                    side=wallet_side,
+                    tx_hash=tx_hash,
+                    exchange=exchange_name,
+                    score=score,
+                )
+            else:
+                logger.info(f"Score {score.total} ({score.tier}) — skipping Telegram alert")
 
             await save_signal({
                 "wallet": wallet,
