@@ -188,6 +188,7 @@ async function getStats(filters: FilterParams) {
            s.market_title, s.outcome, s.account_age_days, s.total_trades,
            s.entry_price, s.resolved, s.won, s.winning_outcome, s.market_slug,
            s.suspicion_score, s.score_tier, s.score_breakdown, s.unique_markets,
+           s.hours_to_resolution,
            wr.total_signals as wallet_signal_count,
            wr.suspicion_streak as wallet_win_streak,
            CASE WHEN wr.total_resolved > 0
@@ -200,6 +201,13 @@ async function getStats(filters: FilterParams) {
     LIMIT 50
   ` as unknown as Signal[];
 
+  const waves = await sql`
+    SELECT w.*
+    FROM wave_events w
+    ORDER BY w.detected_at DESC
+    LIMIT 10
+  ` as unknown as any[];
+
   return {
     total_signals: totals[0].total,
     total_wins: totals[0].wins,
@@ -210,6 +218,7 @@ async function getStats(filters: FilterParams) {
     by_age: byAge,
     by_score: byScore,
     recent_signals: recent,
+    waves,
   };
 }
 
@@ -531,6 +540,39 @@ export default async function Dashboard({
         </div>
       </div>
 
+      {/* Wave Activity */}
+      {stats.waves && stats.waves.length > 0 && (
+        <div className="rounded-lg border border-orange-800/50 bg-orange-950/20">
+          <div className="px-4 py-3 border-b border-orange-800/50">
+            <h2 className="text-sm font-medium text-orange-300">
+              🌊 Recent Wave Activity
+            </h2>
+          </div>
+          <div className="divide-y divide-orange-800/30">
+            {stats.waves.map((w: any) => (
+              <div key={w.id} className="px-4 py-2 text-sm flex items-center gap-2 flex-wrap">
+                <span className="text-orange-300 font-mono">
+                  {w.wallet_count} wallets
+                </span>
+                <span className="text-zinc-600">·</span>
+                <span className="font-mono text-zinc-300">
+                  ${Number(w.total_volume_usdc).toLocaleString()}
+                </span>
+                <span className="text-zinc-600">·</span>
+                <span className="text-zinc-400 truncate max-w-xs">
+                  {w.outcome}
+                </span>
+                {w.shared_funding_source && (
+                  <span className="text-xs px-1.5 py-0.5 rounded bg-red-900/50 text-red-300">
+                    shared funding
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Recent Signals */}
       <div className="rounded-lg border border-zinc-800 bg-zinc-900">
         <div className="px-4 py-3 border-b border-zinc-800">
@@ -593,6 +635,21 @@ export default async function Dashboard({
                           month: "short",
                           day: "numeric",
                         })}
+                        {s.hours_to_resolution != null && s.hours_to_resolution <= 72 && (
+                          <span className={`ml-1 text-xs px-1 py-0.5 rounded ${
+                            s.hours_to_resolution <= 6
+                              ? "bg-red-900/50 text-red-300"
+                              : s.hours_to_resolution <= 24
+                                ? "bg-orange-900/50 text-orange-300"
+                                : "bg-yellow-900/50 text-yellow-300"
+                          }`}>
+                            {s.hours_to_resolution <= 1
+                              ? "<1h"
+                              : s.hours_to_resolution <= 24
+                                ? `${Math.round(s.hours_to_resolution)}h`
+                                : `${Math.round(s.hours_to_resolution / 24)}d`}
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-2 max-w-xs truncate">
                         {s.market_slug ? (
