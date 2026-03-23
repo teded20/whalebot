@@ -24,6 +24,9 @@ export interface Signal {
   won: boolean | null;
   winning_outcome: string | null;
   resolved_at: string | null;
+  wallet_signal_count?: number;
+  wallet_win_streak?: number;
+  wallet_win_rate?: number;
 }
 
 export interface ScoreBucket {

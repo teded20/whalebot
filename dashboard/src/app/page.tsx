@@ -41,13 +41,13 @@ function buildWhereClause(filters: FilterParams): {
   if (filters.score) {
     const tier = filters.score.toUpperCase();
     if (tier === "HIGH") {
-      conditions.push("suspicion_score >= 60");
+      conditions.push("s.suspicion_score >= 60");
       parts.push("HIGH score");
     } else if (tier === "MEDIUM") {
-      conditions.push("suspicion_score >= 30 AND suspicion_score < 60");
+      conditions.push("s.suspicion_score >= 30 AND s.suspicion_score < 60");
       parts.push("MEDIUM score");
     } else if (tier === "LOW") {
-      conditions.push("suspicion_score < 30");
+      conditions.push("s.suspicion_score < 30");
       parts.push("LOW score");
     }
   }
@@ -55,7 +55,7 @@ function buildWhereClause(filters: FilterParams): {
   if (filters.size) {
     const min = parseInt(filters.size, 10);
     if (min > 0) {
-      conditions.push(`trade_size_usdc >= ${min}`);
+      conditions.push(`s.trade_size_usdc >= ${min}`);
       parts.push(`≥$${(min / 1000).toFixed(0)}K`);
     }
   }
@@ -64,7 +64,7 @@ function buildWhereClause(filters: FilterParams): {
     const [minAge, maxAge] = filters.age.split("-").map(Number);
     if (!isNaN(minAge) && !isNaN(maxAge)) {
       conditions.push(
-        `account_age_days >= ${minAge} AND account_age_days < ${maxAge}`,
+        `s.account_age_days >= ${minAge} AND s.account_age_days < ${maxAge}`,
       );
       parts.push(`${minAge}-${maxAge}d age`);
     }
@@ -72,22 +72,22 @@ function buildWhereClause(filters: FilterParams): {
 
   if (filters.status) {
     if (filters.status === "win") {
-      conditions.push("resolved AND won");
+      conditions.push("s.resolved AND s.won");
       parts.push("wins");
     } else if (filters.status === "loss") {
-      conditions.push("resolved AND NOT won");
+      conditions.push("s.resolved AND NOT s.won");
       parts.push("losses");
     } else if (filters.status === "pending") {
-      conditions.push("NOT resolved");
+      conditions.push("NOT s.resolved");
       parts.push("pending");
     }
   }
 
   if (filters.side) {
-    const s = filters.side.toUpperCase();
-    if (s === "BUY" || s === "SELL") {
-      conditions.push(`side = '${s}'`);
-      parts.push(s);
+    const side = filters.side.toUpperCase();
+    if (side === "BUY" || side === "SELL") {
+      conditions.push(`s.side = '${side}'`);
+      parts.push(side);
     }
   }
 
@@ -103,10 +103,10 @@ async function getStats(filters: FilterParams) {
 
   // Totals (filtered)
   const totals = await sql`SELECT COUNT(*)::int as total,
-      COUNT(*) FILTER (WHERE resolved AND won)::int as wins,
-      COUNT(*) FILTER (WHERE resolved AND NOT won)::int as losses,
-      COUNT(*) FILTER (WHERE NOT resolved)::int as pending
-    FROM signals ${sql.unsafe(clause)}` as Record<string, number>[];
+      COUNT(*) FILTER (WHERE s.resolved AND s.won)::int as wins,
+      COUNT(*) FILTER (WHERE s.resolved AND NOT s.won)::int as losses,
+      COUNT(*) FILTER (WHERE NOT s.resolved)::int as pending
+    FROM signals s ${sql.unsafe(clause)}` as Record<string, number>[];
 
   // By threshold (unfiltered — always show full breakdown)
   const byThreshold: ThresholdBucket[] = [];
@@ -184,13 +184,19 @@ async function getStats(filters: FilterParams) {
 
   // Recent signals (filtered)
   const recent = await sql`
-    SELECT id, created_at, wallet, trade_size_usdc, side,
-           market_title, outcome, account_age_days, total_trades,
-           entry_price, resolved, won, winning_outcome, market_slug,
-           suspicion_score, score_tier, score_breakdown, unique_markets
-    FROM signals
+    SELECT s.id, s.created_at, s.wallet, s.trade_size_usdc, s.side,
+           s.market_title, s.outcome, s.account_age_days, s.total_trades,
+           s.entry_price, s.resolved, s.won, s.winning_outcome, s.market_slug,
+           s.suspicion_score, s.score_tier, s.score_breakdown, s.unique_markets,
+           wr.total_signals as wallet_signal_count,
+           wr.suspicion_streak as wallet_win_streak,
+           CASE WHEN wr.total_resolved > 0
+                THEN wr.total_wins::float / wr.total_resolved
+                ELSE NULL END as wallet_win_rate
+    FROM signals s
+    LEFT JOIN wallet_reputation wr ON LOWER(s.wallet) = wr.wallet
     ${sql.unsafe(clause)}
-    ORDER BY created_at DESC
+    ORDER BY s.created_at DESC
     LIMIT 50
   ` as unknown as Signal[];
 
@@ -632,6 +638,14 @@ export default async function Dashboard({
                           />
                           <ScoreBar score={s.suspicion_score} />
                           <ScoreTooltip breakdown={s.score_breakdown} />
+                          {s.wallet_signal_count != null && s.wallet_signal_count > 1 && (
+                            <span className="text-xs px-1 py-0.5 rounded bg-purple-900/50 text-purple-300">
+                              {s.wallet_signal_count}x
+                              {s.wallet_win_streak != null && s.wallet_win_streak >= 2
+                                ? ` \uD83D\uDD25${s.wallet_win_streak}`
+                                : ""}
+                            </span>
+                          )}
                         </div>
                       </td>
                       <td
