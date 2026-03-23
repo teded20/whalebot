@@ -146,6 +146,19 @@ async def process_order_filled(
                     )
                     continue
 
+            # Compute hours to market resolution
+            hours_to_resolution = None
+            end_date_str = market_info.get("end_date", "")
+            if end_date_str:
+                try:
+                    from datetime import datetime, timezone
+                    end_date = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
+                    hours_to_resolution = max(
+                        0, (end_date - datetime.now(timezone.utc)).total_seconds() / 3600
+                    )
+                except (ValueError, TypeError):
+                    pass
+
             # Check for cluster behavior (other new wallets on same outcome)
             cluster_count = await count_recent_new_wallets_on_outcome(
                 ctf_token_id, wallet
@@ -169,6 +182,7 @@ async def process_order_filled(
                 cluster_count=cluster_count,
                 reputation_win_streak=reputation.get("suspicion_streak", 0),
                 reputation_total_signals=reputation.get("total_signals", 0),
+                hours_to_resolution=hours_to_resolution,
             )
 
             logger.info(

@@ -58,6 +58,7 @@ def score_trade(
     cluster_count: int = 0,
     reputation_win_streak: int = 0,
     reputation_total_signals: int = 0,
+    hours_to_resolution: float | None = None,
 ) -> ScoreBreakdown:
     """Calculate a suspicion score (0-100) for a whale trade.
 
@@ -161,6 +162,19 @@ def score_trade(
         breakdown.add("repeat_offender", 5)
     elif reputation_total_signals >= 3:
         breakdown.add("repeat_offender", 3)
+
+    # --- 8. Time proximity to resolution (max 15 pts) ---
+    # Every insider case: bets placed <72h before event.
+    # Maduro: <1h. Iran/Magamyman: 71min. Nobel: ~11h. OpenAI: <40h.
+    if hours_to_resolution is not None:
+        if hours_to_resolution <= 6:
+            breakdown.add("time_proximity", 15)
+        elif hours_to_resolution <= 24:
+            breakdown.add("time_proximity", 12)
+        elif hours_to_resolution <= 72:
+            breakdown.add("time_proximity", 8)
+        elif hours_to_resolution <= 168:  # 1 week
+            breakdown.add("time_proximity", 3)
 
     # Cap at 100
     if breakdown.total > 100:

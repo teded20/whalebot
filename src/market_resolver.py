@@ -72,6 +72,11 @@ async def resolve_market(token_id: str, client: httpx.AsyncClient) -> dict:
                 if events and isinstance(events, list):
                     event_slug = events[0].get("slug", "")
 
+                # Get end date from market or parent event
+                end_date = market.get("endDate", "")
+                if not end_date and events:
+                    end_date = events[0].get("endDate", "")
+
                 info = {
                     "title": market.get("question", market.get("title", "Unknown")),
                     "slug": event_slug or market.get("slug", ""),
@@ -80,6 +85,7 @@ async def resolve_market(token_id: str, client: httpx.AsyncClient) -> dict:
                     "icon": market.get("icon", ""),
                     "token_id": token_id,
                     "condition_id": market.get("conditionId", ""),
+                    "end_date": end_date,
                 }
     except Exception as e:
         logger.warning(f"Failed to resolve market for token {token_id}: {e}")
