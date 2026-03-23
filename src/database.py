@@ -108,6 +108,21 @@ async def init_db():
             pass
 
         await conn.execute("""
+            CREATE TABLE IF NOT EXISTS wallet_funding (
+                wallet TEXT PRIMARY KEY,
+                funding_source TEXT,
+                funding_tx_hash TEXT,
+                funding_amount_usdc DOUBLE PRECISION,
+                funding_timestamp TIMESTAMPTZ,
+                is_round_amount BOOLEAN DEFAULT FALSE,
+                source_type TEXT DEFAULT 'unknown',
+                checked_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_funding_source
+                ON wallet_funding(funding_source);
+        """)
+
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS wallet_reputation (
                 wallet TEXT PRIMARY KEY,
                 first_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -447,3 +462,34 @@ async def get_wallet_reputation(wallet: str) -> dict | None:
         """, {"wallet": wallet.lower()})
         result = await row.fetchone()
         return dict(result) if result else None
+
+
+async def save_wallet_funding(wallet: str, funding: dict) -> None:
+    """Save wallet funding source info."""
+    async with _pool.connection() as conn:
+        await conn.execute("""
+            INSERT INTO wallet_funding (
+                wallet, funding_source, funding_tx_hash,
+                funding_amount_usdc, funding_timestamp,
+                is_round_amount, source_type
+            ) VALUES (
+                %(wallet)s, %(funding_source)s, %(funding_tx_hash)s,
+                %(funding_amount_usdc)s, %(funding_timestamp)s,
+                %(is_round_amount)s, %(source_type)s
+            )
+            ON CONFLICT (wallet) DO NOTHING
+        """, {"wallet": wallet.lower(), **funding})
+        await conn.commit()
+
+
+async def count_wallets_from_same_source(funding_source: str) -> int:
+    """Count how many tracked wallets were funded by the same address."""
+    if not funding_source:
+        return 0
+    async with _pool.connection() as conn:
+        row = await conn.execute("""
+            SELECT COUNT(*) as cnt FROM wallet_funding
+            WHERE funding_source = %(source)s
+        """, {"source": funding_source.lower()})
+        result = await row.fetchone()
+        return result["cnt"] if result else 0
