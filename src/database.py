@@ -123,6 +123,25 @@ async def init_db():
         """)
 
         await conn.execute("""
+            CREATE TABLE IF NOT EXISTS wave_events (
+                id SERIAL PRIMARY KEY,
+                condition_id TEXT NOT NULL,
+                outcome TEXT NOT NULL,
+                detected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                wallet_count INT NOT NULL,
+                total_volume_usdc DOUBLE PRECISION NOT NULL,
+                time_window_minutes INT NOT NULL,
+                wallets TEXT[] NOT NULL,
+                avg_suspicion_score DOUBLE PRECISION,
+                shared_funding_source TEXT,
+                price_before DOUBLE PRECISION,
+                price_after DOUBLE PRECISION
+            );
+            CREATE INDEX IF NOT EXISTS idx_wave_condition
+                ON wave_events(condition_id);
+        """)
+
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS wallet_reputation (
                 wallet TEXT PRIMARY KEY,
                 first_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -493,3 +512,29 @@ async def count_wallets_from_same_source(funding_source: str) -> int:
         """, {"source": funding_source.lower()})
         result = await row.fetchone()
         return result["cnt"] if result else 0
+
+
+async def save_wave_event(condition_id: str, outcome: str, wave: dict) -> None:
+    """Persist a detected wave event."""
+    async with _pool.connection() as conn:
+        await conn.execute("""
+            INSERT INTO wave_events (
+                condition_id, outcome, wallet_count,
+                total_volume_usdc, time_window_minutes,
+                wallets, avg_suspicion_score, shared_funding_source
+            ) VALUES (
+                %(cid)s, %(outcome)s, %(wallet_count)s,
+                %(total_volume)s, %(window)s,
+                %(wallets)s, %(avg_score)s, %(shared_source)s
+            )
+        """, {
+            "cid": condition_id,
+            "outcome": outcome,
+            "wallet_count": wave["wallet_count"],
+            "total_volume": wave["total_volume_usdc"],
+            "window": wave["time_window_minutes"],
+            "wallets": wave["wallets"],
+            "avg_score": wave.get("avg_suspicion_score"),
+            "shared_source": wave.get("shared_funding_source"),
+        })
+        await conn.commit()
