@@ -137,6 +137,15 @@ async def process_order_filled(
             market_info = await resolve_market(ctf_token_id, http_client)
             entry_price = await get_current_price(ctf_token_id, http_client)
 
+            # Skip high-probability bets — not suspicious, just safe money
+            if entry_price is not None:
+                effective_prob = entry_price if wallet_side == "BUY" else (1.0 - entry_price)
+                if effective_prob > 0.85:
+                    logger.debug(
+                        f"Skipping {wallet[:10]}... — {effective_prob:.0%} implied prob, not suspicious"
+                    )
+                    continue
+
             # Check for cluster behavior (other new wallets on same outcome)
             cluster_count = await count_recent_new_wallets_on_outcome(
                 ctf_token_id, wallet
