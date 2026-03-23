@@ -58,6 +58,7 @@ async def send_whale_alert(
     exchange: str,
     score: ScoreBreakdown | None = None,
     entry_price: float | None = None,
+    wave: dict | None = None,
 ) -> bool:
     """Send a formatted whale alert to the configured Telegram chat.
 
@@ -136,6 +137,15 @@ async def send_whale_alert(
             + "\n"
         )
 
+    wave_section = ""
+    if wave and wave.get("wallet_count", 0) >= 3:
+        wave_section = (
+            f"\n🌊 <b>WAVE ALERT: {wave['wallet_count']} wallets</b>\n"
+            f"Combined volume: ${wave['total_volume_usdc']:,.0f}\n"
+        )
+        if wave.get("shared_funding_source"):
+            wave_section += f"⚠️ Shared funding source detected\n"
+
     message = (
         f"{size_emoji} <b>New Whale Alert</b> {size_emoji}\n"
         f"\n"
@@ -152,7 +162,8 @@ async def send_whale_alert(
         f"<b>Account age:</b> {analysis.account_age_days} days\n"
         f"<b>Total volume:</b> ${analysis.total_volume_usdc:,.2f}\n"
         f"<b>Markets traded:</b> {analysis.unique_markets}\n"
-        f"{score_section}\n"
+        f"{score_section}"
+        f"{wave_section}\n"
         f"🔗 <a href=\"{analysis.profile_url}\">Polymarket Profile</a>\n"
         f"🔗 <a href=\"{analysis.polygonscan_url}\">PolygonScan</a>\n"
     )

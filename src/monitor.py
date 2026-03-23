@@ -213,21 +213,6 @@ async def process_order_filled(
                 f"{market_info.get('title', '?')[:40]}"
             )
 
-            # Only send Telegram alerts for HIGH suspicion scores
-            if score.tier == "HIGH":
-                await send_whale_alert(
-                    analysis=analysis,
-                    trade_size_usdc=usdc_amount,
-                    market_info=market_info,
-                    side=wallet_side,
-                    tx_hash=tx_hash,
-                    exchange=exchange_name,
-                    score=score,
-                    entry_price=entry_price,
-                )
-            else:
-                logger.info(f"Score {score.total} ({score.tier}) — skipping Telegram alert")
-
             await save_signal({
                 "wallet": wallet,
                 "trade_size_usdc": usdc_amount,
@@ -250,6 +235,46 @@ async def process_order_filled(
                 "unique_markets": analysis.unique_markets,
                 "hours_to_resolution": hours_to_resolution,
             })
+
+            # Detect coordinated waves (signal is now in DB, so query includes it)
+            wave = None
+            try:
+                from .waves import detect_wave
+                from .database import save_wave_event
+                wave = await detect_wave(
+                    condition_id=market_info.get("condition_id", ""),
+                    outcome=market_info.get("outcome", ""),
+                    current_wallet=wallet,
+                )
+                if wave:
+                    await save_wave_event(
+                        condition_id=market_info.get("condition_id", ""),
+                        outcome=market_info.get("outcome", ""),
+                        wave=wave,
+                    )
+                    logger.warning(
+                        f"🌊 WAVE DETECTED: {wave['wallet_count']} wallets | "
+                        f"${wave['total_volume_usdc']:,.0f} total | "
+                        f"{market_info.get('title', '?')[:40]}"
+                    )
+            except Exception as e:
+                logger.warning(f"Wave detection failed for {wallet[:10]}...: {e}")
+
+            # Only send Telegram alerts for HIGH suspicion scores
+            if score.tier == "HIGH":
+                await send_whale_alert(
+                    analysis=analysis,
+                    trade_size_usdc=usdc_amount,
+                    market_info=market_info,
+                    side=wallet_side,
+                    tx_hash=tx_hash,
+                    exchange=exchange_name,
+                    score=score,
+                    entry_price=entry_price,
+                    wave=wave,
+                )
+            else:
+                logger.info(f"Score {score.total} ({score.tier}) — skipping Telegram alert")
 
             # Update wallet reputation
             from .database import upsert_wallet_reputation
