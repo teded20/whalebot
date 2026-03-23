@@ -544,7 +544,7 @@ export default async function Dashboard({
                 <th className="px-4 py-2 text-left">Market</th>
                 <th className="px-4 py-2 text-left">Side</th>
                 <th className="px-4 py-2 text-right">Size</th>
-                <th className="px-4 py-2 text-right">Entry</th>
+                <th className="px-4 py-2 text-right">Price / Prob</th>
                 <th className="px-4 py-2 text-right">Age</th>
                 <th className="px-4 py-2 text-center">Score</th>
                 <th className="px-4 py-2 text-left">Status</th>
@@ -612,8 +612,13 @@ export default async function Dashboard({
                         {formatUsd(s.trade_size_usdc)}
                       </td>
                       <td className="px-4 py-2 text-right font-mono text-zinc-400">
-                        {s.entry_price
-                          ? `$${s.entry_price.toFixed(2)}`
+                        {s.entry_price != null
+                          ? <>
+                              ${s.entry_price.toFixed(2)}{" "}
+                              <span className="text-zinc-500 text-xs">
+                                ({(s.entry_price * 100).toFixed(0)}%)
+                              </span>
+                            </>
                           : "\u2014"}
                       </td>
                       <td className="px-4 py-2 text-right font-mono text-zinc-400">

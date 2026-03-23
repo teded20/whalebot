@@ -173,6 +173,7 @@ async def process_order_filled(
                     tx_hash=tx_hash,
                     exchange=exchange_name,
                     score=score,
+                    entry_price=entry_price,
                 )
             else:
                 logger.info(f"Score {score.total} ({score.tier}) — skipping Telegram alert")

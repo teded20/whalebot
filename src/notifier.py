@@ -57,6 +57,7 @@ async def send_whale_alert(
     tx_hash: str,
     exchange: str,
     score: ScoreBreakdown | None = None,
+    entry_price: float | None = None,
 ) -> bool:
     """Send a formatted whale alert to the configured Telegram chat.
 
@@ -141,6 +142,7 @@ async def send_whale_alert(
         f"<b>Market:</b> {market_title}\n"
         f"<b>Direction:</b> {direction_emoji} {outcome}\n"
         f"<b>Size:</b> ${trade_size_usdc:,.2f} USDC\n"
+        f"<b>Price:</b> {f'${entry_price:.2f} ({entry_price * 100:.0f}% implied)' if entry_price is not None else 'N/A'}\n"
         f"<b>Exchange:</b> {exchange}\n"
         f"\n"
         f"{age_emoji} <b>Account: {age_label}</b>\n"
