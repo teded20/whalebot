@@ -66,11 +66,17 @@ async def resolve_market(token_id: str, client: httpx.AsyncClient) -> dict:
                         outcome_name = outcomes[i]
                         break
 
+                # Event slug lives inside the events array, not at the top level
+                event_slug = ""
+                events = market.get("events", [])
+                if events and isinstance(events, list):
+                    event_slug = events[0].get("slug", "")
+
                 info = {
                     "title": market.get("question", market.get("title", "Unknown")),
-                    "slug": market.get("slug", ""),
+                    "slug": event_slug or market.get("slug", ""),
                     "outcome": outcome_name,
-                    "event_slug": market.get("eventSlug", ""),
+                    "event_slug": event_slug,
                     "icon": market.get("icon", ""),
                     "token_id": token_id,
                     "condition_id": market.get("conditionId", ""),
