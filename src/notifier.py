@@ -122,6 +122,11 @@ async def send_whale_alert(
             "concentration": "Concentrated",
             "size_ratio": "Size vs History",
             "cluster": "Cluster Activity",
+            "repeat_winner": "🔥 Repeat Winner",
+            "repeat_offender": "Repeat Offender",
+            "time_proximity": "⏰ Imminent Resolution",
+            "shared_funding": "Shared Funding Source",
+            "round_funding": "Round Deposit Amount",
         }
         for key, pts in score.components.items():
             if pts > 0:
