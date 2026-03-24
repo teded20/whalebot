@@ -137,6 +137,13 @@ async def process_order_filled(
             market_info = await resolve_market(ctf_token_id, http_client)
             entry_price = await get_current_price(ctf_token_id, http_client)
 
+            # Skip short-duration price candle markets (BTC/ETH 5m, 15m, etc.)
+            # These are pure gambling — no insider info on 5-minute price moves.
+            slug = market_info.get("slug", "")
+            if "updown-" in slug and any(t in slug for t in ["-5m-", "-15m-", "-1h-", "-4h-"]):
+                logger.debug(f"Skipping {wallet[:10]}... — price candle market: {slug}")
+                continue
+
             # Skip non-suspicious probability bets
             # BUY at >85% = buying near-certain outcome (safe money)
             # SELL at >85% = selling near-certain token for pennies of edge (market making, not insider)
