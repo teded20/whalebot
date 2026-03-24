@@ -202,8 +202,13 @@ async function getStats(filters: FilterParams) {
   ` as unknown as Signal[];
 
   const waves = await sql`
-    SELECT w.*
+    SELECT w.*,
+           s.market_title, s.market_slug
     FROM wave_events w
+    LEFT JOIN LATERAL (
+      SELECT market_title, market_slug FROM signals
+      WHERE condition_id = w.condition_id LIMIT 1
+    ) s ON true
     ORDER BY w.detected_at DESC
     LIMIT 10
   ` as unknown as any[];
@@ -551,7 +556,7 @@ export default async function Dashboard({
           <div className="divide-y divide-orange-800/30">
             {stats.waves.map((w: any) => (
               <div key={w.id} className="px-4 py-2 text-sm flex items-center gap-2 flex-wrap">
-                <span className="text-orange-300 font-mono">
+                <span className="text-orange-300 font-mono font-medium">
                   {w.wallet_count} wallets
                 </span>
                 <span className="text-zinc-600">·</span>
@@ -559,14 +564,33 @@ export default async function Dashboard({
                   ${Number(w.total_volume_usdc).toLocaleString()}
                 </span>
                 <span className="text-zinc-600">·</span>
-                <span className="text-zinc-400 truncate max-w-xs">
-                  {w.outcome}
+                {w.market_slug ? (
+                  <a
+                    href={`https://polymarket.com/event/${w.market_slug}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-zinc-300 hover:text-blue-400 transition-colors truncate max-w-xs"
+                  >
+                    {w.market_title || w.outcome}
+                  </a>
+                ) : (
+                  <span className="text-zinc-400 truncate max-w-xs">
+                    {w.market_title || w.outcome}
+                  </span>
+                )}
+                <span className="text-zinc-500 text-xs">
+                  ({w.outcome})
                 </span>
                 {w.shared_funding_source && (
                   <span className="text-xs px-1.5 py-0.5 rounded bg-red-900/50 text-red-300">
                     shared funding
                   </span>
                 )}
+                <span className="text-zinc-600 text-xs ml-auto">
+                  {new Date(w.detected_at).toLocaleDateString("en-US", {
+                    month: "short", day: "numeric", hour: "numeric", minute: "2-digit"
+                  })}
+                </span>
               </div>
             ))}
           </div>
