@@ -137,13 +137,16 @@ async def process_order_filled(
             market_info = await resolve_market(ctf_token_id, http_client)
             entry_price = await get_current_price(ctf_token_id, http_client)
 
-            # Skip high-probability bets — not suspicious, just safe money
+            # Skip non-suspicious probability bets
+            # BUY at >85% = buying near-certain outcome (safe money)
+            # SELL at >85% = selling near-certain token for pennies of edge (market making, not insider)
+            # Insiders BUY longshots, they don't SELL favorites.
             if entry_price is not None:
-                effective_prob = entry_price if wallet_side == "BUY" else (1.0 - entry_price)
-                if effective_prob > 0.85:
-                    logger.debug(
-                        f"Skipping {wallet[:10]}... — {effective_prob:.0%} implied prob, not suspicious"
-                    )
+                if wallet_side == "BUY" and entry_price > 0.85:
+                    logger.debug(f"Skipping {wallet[:10]}... — BUY at {entry_price:.0%}, not suspicious")
+                    continue
+                if wallet_side == "SELL" and entry_price > 0.85:
+                    logger.debug(f"Skipping {wallet[:10]}... — SELL at {entry_price:.0%}, market making")
                     continue
 
             # Compute hours to market resolution
